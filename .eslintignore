@@ -1,0 +1,8 @@
+.env
+.solhint.json
+.idea
+truffle-config.js
+node_modules
+build
+slither.config.json
+gas-report.txt
