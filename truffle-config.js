@@ -10,6 +10,13 @@ module.exports = {
       port: 8545, // Standard BSC port (default: none)
       network_id: '*', // Any network (default: none)
     },
+    ftmTestnet: {
+      provider: () => new HDWalletProvider(MNENOMIC, 'https://xapi.testnet.fantom.network/lachesis'),
+      network_id: "4002",
+      timeoutBlocks: 1200,
+      skipDryRun: true,
+      from: process.env.DEPLOYER_ADDRESS.toString().trim(),
+    },
   },
 
   plugins: [

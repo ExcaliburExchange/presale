@@ -8,10 +8,11 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
 
-import "excalibur/contracts/interfaces/tokens/IWETH.sol";
-import "excalibur/contracts/interfaces/IExcaliburV2Pair.sol";
-import "excalibur/contracts/interfaces/IExcaliburV2Factory.sol";
+import "excalibur-core/contracts/interfaces/IExcaliburV2Pair.sol";
+import "excalibur-core/contracts/interfaces/IExcaliburV2Factory.sol";
 import "excalibur/contracts/interfaces/IDividends.sol";
+
+import "./interfaces/IWETH.sol";
 
 /**
   Excalibur presale contract
