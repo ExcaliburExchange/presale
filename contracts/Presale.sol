@@ -27,14 +27,14 @@ contract Presale is Ownable, ReentrancyGuard {
     uint256 allocation;
     uint256 maxAllocation;
 
-    EnumerableSet.AddressSet refs; // allow to set multiple refs (multiple launchpads)
+    EnumerableSet.AddressSet refs; // allow to set multiple refs (same addr from multiple wl partners)
 
-    uint256 refAllocation; // allocation earned by referring another user
+    uint256 refAllocation; // commissioned allocation earned by referring another user
     uint256 refEarning; // WFTM earned by referring another user
-    bool getAllocationAsRef; // define the user earn allocation or WFTM by referring another user
+    bool getAllocationAsRef; // defines whether user will earn LP tokens or WFTM as a referrer
     uint256 refShare;
 
-    bool hasClaimed; // has already claim its lp share
+    bool hasClaimed; // has already claimed its lp share
   }
 
   mapping(address => userInfo) users;
@@ -50,8 +50,6 @@ contract Presale is Ownable, ReentrancyGuard {
 
   uint256 public constant DEFAULT_REFERRAL_SHARE = 3; // 3%
   uint256 public constant DEFAULT_MAX_ALLOCATION = 526 ether; // 526FTM ~$1k
-  // TODO: should we keep a min investment to be able to refer another user ?
-  uint256 public constant REFERRER_MIN_ALLOCATION = 0 ether; // min allocation to have to be able to referrer another users
 
   uint256 public totalAllocation;
   uint256 public totalLPAmountToClaim;
@@ -59,8 +57,11 @@ contract Presale is Ownable, ReentrancyGuard {
   uint256 public lpWFTMAmount;
   bool public isLpBuilt;
 
+  address emergencyOperator; // Multisig operator with publicly known partners
 
   constructor(address exc, address wftm, IExcaliburV2Factory factory, IDividends dividends, uint256 startTime, uint256 endTime) {
+    require(startTime < endTime, "invalid timestamp");
+
     EXC = exc;
     WFTM = wftm;
     FACTORY = factory;
@@ -69,7 +70,6 @@ contract Presale is Ownable, ReentrancyGuard {
     END_TIME = endTime;
   }
 
-
   /********************************************/
   /****************** EVENTS ******************/
   /********************************************/
@@ -77,6 +77,10 @@ contract Presale is Ownable, ReentrancyGuard {
   event Buy(address indexed user, uint256 ftmAmount);
   event Claim(address indexed user, uint256 lpAmount);
   event LPBuild(uint256 excAmount, uint256 ftmAmount);
+  event NewRefEarning(address referrer, uint256 ftmAmount);
+
+  event TransferEmergencyOperator(address prevOperator, address newOperator);
+  event EmergencyWithdraw(uint256 excAmount, uint256 ftmAmount);
 
   /***********************************************/
   /****************** MODIFIERS ******************/
@@ -144,13 +148,15 @@ contract Presale is Ownable, ReentrancyGuard {
     uint256 ftmAmount = msg.value;
     require(ftmAmount > 0, "buy: zero amount");
 
+    IWETH(WFTM).deposit{value : ftmAmount}();
+
     userInfo storage user = users[msg.sender];
     uint256 maxAllocation = user.maxAllocation != 0 ? user.maxAllocation : DEFAULT_MAX_ALLOCATION;
     require(user.allocation.add(ftmAmount) <= maxAllocation, "buy: total amount cannot exceed maxAllocation");
 
-    if(user.allocation == 0 && user.refs.length() == 0 && referralAddress != address(0)){
+    if(user.allocation == 0 && user.refs.length() == 0 && referralAddress != address(0) && referralAddress != msg.sender){
       // If first buy, and does not have any ref already set
-      if(users[referralAddress].allocation > REFERRER_MIN_ALLOCATION ) user.refs.add(referralAddress);
+      user.refs.add(referralAddress);
     }
 
     uint256 refsAmount = user.refs.length();
@@ -168,7 +174,8 @@ contract Presale is Ownable, ReentrancyGuard {
           lpWFTMAmount = lpWFTMAmount.add(refShareAmount.div(2));
         }
         else{
-          assert(IWETH(WFTM).transfer(curRefAddress, refShareAmount));
+          IERC20(WFTM).safeTransfer(curRefAddress, refShareAmount);
+          emit NewRefEarning(curRefAddress, refShareAmount);
         }
       }
     }
@@ -176,8 +183,6 @@ contract Presale is Ownable, ReentrancyGuard {
     user.allocation = user.allocation.add(ftmAmount);
     totalAllocation = totalAllocation.add(ftmAmount);
     lpWFTMAmount = lpWFTMAmount.add(ftmAmount.div(2));
-
-    IWETH(WFTM).deposit{value : ftmAmount}();
 
     emit Buy(msg.sender, ftmAmount);
   }
@@ -190,7 +195,7 @@ contract Presale is Ownable, ReentrancyGuard {
     user.hasClaimed = true;
 
     uint256 LPAmountToClaim = user.allocation.add(user.refAllocation).mul(totalLPAmountToClaim).div(totalAllocation);
-    IERC20(lpToClaim).safeTransfer(msg.sender, LPAmountToClaim);
+    _safeClaimTransfer(msg.sender, LPAmountToClaim, IERC20(lpToClaim));
 
     emit Claim(msg.sender, LPAmountToClaim);
   }
@@ -199,24 +204,24 @@ contract Presale is Ownable, ReentrancyGuard {
   /********************** OWNABLE FUNCTIONS  **********************/
   /****************************************************************/
 
-  struct usersConfig{
+  struct allocationSettings{
     address account;
     uint256 maxAllocation;
   }
   /**
-    @dev Customize users settings. Aimed to be used for launchpads partners users
-    @param referrer: launchpads partners address
+    @dev For custom allocations, used for launch partners users
+    @param referrer: launch partner address
   */
-  function customizeUsersConfig(usersConfig[] memory _users, address referrer) public onlyOwner {
+  function setUsersAllocation(allocationSettings[] memory _users, address referrer) public onlyOwner {
     for (uint256 i = 0; i < _users.length; ++i){
-      usersConfig memory userConfig = _users[i];
-      userInfo storage user = users[userConfig.account];
-      if(user.maxAllocation < userConfig.maxAllocation) user.maxAllocation = userConfig.maxAllocation;
+      allocationSettings memory userAllocation = _users[i];
+      userInfo storage user = users[userAllocation.account];
+      if(user.maxAllocation < userAllocation.maxAllocation) user.maxAllocation = userAllocation.maxAllocation;
       user.refs.add(referrer);
     }
   }
 
-  function customizePartnersConfig(address account, uint256 refShare) public onlyOwner {
+  function setPartnerCommission(address account, uint256 refShare) public onlyOwner {
     require(refShare <= 5, 'invalid share');
     users[account].refShare = refShare;
     users[account].getAllocationAsRef = true;
@@ -233,16 +238,55 @@ contract Presale is Ownable, ReentrancyGuard {
     IERC20(WFTM).safeTransfer(lpToClaim, lpWFTMAmount);
     totalLPAmountToClaim = IExcaliburV2Pair(lpToClaim).mint(address(this));
 
-    // add remaining WFTM to dividends
+    // add remaining WFTM to GRAIL dividends contract
     IERC20(WFTM).safeApprove(address(DIVIDENDS), IERC20(WFTM).balanceOf(address(this)));
     DIVIDENDS.addDividendsToPending(WFTM, IERC20(WFTM).balanceOf(address(this)));
 
     emit LPBuild(excAmount, lpWFTMAmount);
   }
 
+  function initEmergencyOperator(address operator) external onlyOwner{
+    require(emergencyOperator == address(0), "initEmergencyOperator: already initialized");
+    emergencyOperator = operator;
+    emit TransferEmergencyOperator(address(0), emergencyOperator);
+  }
+
+  /********************************************************/
+  /****************** /!\ EMERGENCY ONLY ******************/
+  /********************************************************/
+
+  /**
+  * @dev Failsafe
+  *
+  * Only callable by the multisig emergencyOperator
+  */
+  function emergencyWithdrawFunds() external {
+    require(msg.sender == emergencyOperator, "emergencyWithdrawFunds: not allowed");
+    uint256 wFTMAmount = IERC20(WFTM).balanceOf(address(this));
+    uint256 excAmount = IERC20(EXC).balanceOf(address(this));
+    IERC20(EXC).safeTransfer(msg.sender, excAmount);
+    IERC20(WFTM).safeTransfer(msg.sender, wFTMAmount);
+
+    emit EmergencyWithdraw(excAmount, wFTMAmount);
+  }
+
   /********************************************************/
   /****************** INTERNAL FUNCTIONS ******************/
   /********************************************************/
+
+  /**
+   * @dev Safe token transfer function, in case rounding error causes contract to not have enough tokens
+   */
+  function _safeClaimTransfer(address to, uint256 amount, IERC20 lpToken) internal {
+    uint256 lpTokenBalance = lpToken.balanceOf(address(this));
+    bool transferSuccess = false;
+    if (amount > lpTokenBalance) {
+      transferSuccess = lpToken.transfer(to, lpTokenBalance);
+    } else {
+      transferSuccess = lpToken.transfer(to, amount);
+    }
+    require(transferSuccess, "safeClaimTransfer: Transfer failed");
+  }
 
   /**
    * @dev Utility function to get the current block timestamp
