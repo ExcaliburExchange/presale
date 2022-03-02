@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity =0.7.6;
+pragma abicoder v2;
 
 import "@openzeppelin/contracts/utils/EnumerableSet.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -26,7 +27,7 @@ contract Presale is Ownable, ReentrancyGuard {
     uint256 allocation;
     uint256 maxAllocation;
 
-    EnumerableSet.AddressSet refs;
+    EnumerableSet.AddressSet refs; // allow to set multiple refs (multiple launchpads)
 
     uint256 refAllocation; // allocation earned by referring another user
     uint256 refEarning; // WFTM earned by referring another user
@@ -48,11 +49,12 @@ contract Presale is Ownable, ReentrancyGuard {
   uint256 public immutable END_TIME;
 
   uint256 public constant DEFAULT_REFERRAL_SHARE = 3; // 3%
-  uint256 public constant DEFAULT_MAX_ALLOCATION = 300 ether; // 300FTM
+  uint256 public constant DEFAULT_MAX_ALLOCATION = 526 ether; // 526FTM ~$1k
+  // TODO: should we keep a min investment to be able to refer another user ?
   uint256 public constant REFERRER_MIN_ALLOCATION = 0 ether; // min allocation to have to be able to referrer another users
 
   uint256 public totalAllocation;
-  uint256 totalLPAmountToClaim;
+  uint256 public totalLPAmountToClaim;
 
   uint256 public lpWFTMAmount;
   bool public isLpBuilt;
@@ -125,10 +127,12 @@ contract Presale is Ownable, ReentrancyGuard {
     userInfo storage user = users[userAddress];
     allocation = user.allocation;
     maxAllocation = user.maxAllocation;
+    if(maxAllocation == 0) maxAllocation = DEFAULT_MAX_ALLOCATION;
     refAllocation = user.refAllocation;
     refEarning = user.refEarning;
     getAllocationAsRef = user.getAllocationAsRef;
     refShare = user.refShare;
+    if(refShare == 0) refShare = DEFAULT_REFERRAL_SHARE;
     hasClaimed = user.hasClaimed;
   }
 
@@ -138,12 +142,10 @@ contract Presale is Ownable, ReentrancyGuard {
 
   function buy(address referralAddress) external payable isSaleActive {
     uint256 ftmAmount = msg.value;
-
     require(ftmAmount > 0, "buy: zero amount");
 
     userInfo storage user = users[msg.sender];
     uint256 maxAllocation = user.maxAllocation != 0 ? user.maxAllocation : DEFAULT_MAX_ALLOCATION;
-
     require(user.allocation.add(ftmAmount) <= maxAllocation, "buy: total amount cannot exceed maxAllocation");
 
     if(user.allocation == 0 && user.refs.length() == 0 && referralAddress != address(0)){
@@ -163,7 +165,6 @@ contract Presale is Ownable, ReentrancyGuard {
         if(referral.getAllocationAsRef) {
           referral.refAllocation = referral.refAllocation.add(refShareAmount);
           totalAllocation = totalAllocation.add(refShareAmount);
-
           lpWFTMAmount = lpWFTMAmount.add(refShareAmount.div(2));
         }
         else{
@@ -198,17 +199,42 @@ contract Presale is Ownable, ReentrancyGuard {
   /********************** OWNABLE FUNCTIONS  **********************/
   /****************************************************************/
 
+  struct usersConfig{
+    address account;
+    uint256 maxAllocation;
+  }
+  /**
+    @dev Customize users settings. Aimed to be used for launchpads partners users
+    @param referrer: launchpads partners address
+  */
+  function customizeUsersConfig(usersConfig[] memory _users, address referrer) public onlyOwner {
+    for (uint256 i = 0; i < _users.length; ++i){
+      usersConfig memory userConfig = _users[i];
+      userInfo storage user = users[userConfig.account];
+      if(user.maxAllocation < userConfig.maxAllocation) user.maxAllocation = userConfig.maxAllocation;
+      user.refs.add(referrer);
+    }
+  }
+
+  function customizePartnersConfig(address account, uint256 refShare) public onlyOwner {
+    require(refShare <= 5, 'invalid share');
+    users[account].refShare = refShare;
+    users[account].getAllocationAsRef = true;
+  }
+
   function buildLP() external virtual onlyOwner {
     require(hasEnded(), "buildLP: sale has not ended");
     isLpBuilt = true;
 
     lpToClaim = FACTORY.getPair(EXC, WFTM);
     uint256 excAmount = IERC20(EXC).balanceOf(address(this));
+
     IERC20(EXC).safeTransfer(lpToClaim, excAmount);
     IERC20(WFTM).safeTransfer(lpToClaim, lpWFTMAmount);
     totalLPAmountToClaim = IExcaliburV2Pair(lpToClaim).mint(address(this));
 
     // add remaining WFTM to dividends
+    IERC20(WFTM).safeApprove(address(DIVIDENDS), IERC20(WFTM).balanceOf(address(this)));
     DIVIDENDS.addDividendsToPending(WFTM, IERC20(WFTM).balanceOf(address(this)));
 
     emit LPBuild(excAmount, lpWFTMAmount);
