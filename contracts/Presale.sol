@@ -175,6 +175,7 @@ contract Presale is Ownable, ReentrancyGuard {
         }
         else{
           IERC20(WFTM).safeTransfer(curRefAddress, refShareAmount);
+          referral.refEarning = referral.refEarning.add(refShareAmount);
           emit NewRefEarning(curRefAddress, refShareAmount);
         }
       }
